@@ -8,13 +8,14 @@ const r = (p) => fileURLToPath(new URL(p, import.meta.url))
 export default defineConfig({
   plugins: [react()],
   resolve: {
-    // Map the private Graftcode packages to local stubs so the app builds and
-    // runs without access to the private registries. Order matters: the
-    // styles.css subpath must be matched before the bare package name.
+    // @graftcode/design-system lives in a private registry — use local stubs.
+    // @graft/nuget-EnergyPriceService is now installed from the Graftcode registry.
     alias: [
       { find: '@graftcode/design-system/styles.css', replacement: r('./src/stubs/design-system.css') },
       { find: '@graftcode/design-system', replacement: r('./src/stubs/design-system.jsx') },
-      { find: '@graft/nuget-EnergyPriceService', replacement: r('./src/stubs/graft.js') },
+      // hypertube-nodejs-sdk imports randomUUID from 'crypto' (Node built-in).
+      // Shim it to the browser Web Crypto API so Vite can bundle it.
+      { find: 'crypto', replacement: r('./src/stubs/crypto-browser.js') },
     ],
   },
 })

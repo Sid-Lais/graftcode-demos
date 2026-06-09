@@ -71,3 +71,11 @@ electric-company-be/Binaries/
 electric-company-be/GMA/
 electric-company-be/GVFE/
 _Hypertube*.txt
+
+# Binary / build artefacts (graft tooling)
+Binaries/
+GMA/
+GVFE/
+perf-lab/Binaries/
+perf-lab/GMA/
+perf-lab/GVFE/

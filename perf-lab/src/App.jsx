@@ -2,7 +2,7 @@ import { useState, useEffect } from 'react'
 import './App.css'
 import { GraftConfig, EnergyPriceService } from '@graft/nuget-EnergyPriceService'
 import { Button, Checkbox, Select } from '@graftcode/design-system'
-import { callGrpcGetPriceHistory, streamGrpcPrices } from './grpcClient'
+import { callGrpcGetPriceHistory } from './grpcClient'
 
 function App() {
   const currencyOptions = [
@@ -30,6 +30,7 @@ function App() {
   const integrationTechOptions = [
     { type: 'item', value: 'REST', label: 'REST' },
     { type: 'item', value: 'gRPC', label: 'gRPC' },
+    { type: 'item', value: 'Graftcode', label: 'Graftcode' },
   ]
 
   const payloadCountOptions = [
@@ -52,7 +53,7 @@ function App() {
   const [restHistoryMs, setRestHistoryMs] = useState(null)
   const [restHistoryKb, setRestHistoryKb] = useState(null)
   const [grpcHistoryMs, setGrpcHistoryMs] = useState(null)
-  const [grpcStreamMs, setGrpcStreamMs] = useState(null)
+  const [graftHistoryMs, setGraftHistoryMs] = useState(null)
 
   const [rps, setRps] = useState(200000)
   const [cloudProvider, setCloudProvider] = useState('Azure')
@@ -77,6 +78,13 @@ function App() {
     return Math.round(Math.min(...times) * 0.8)
   }
 
+  const msForTech = (tech) => {
+    if (tech === 'REST') return adjustForLatency(restHistoryMs)
+    if (tech === 'gRPC') return adjustForLatency(grpcHistoryMs)
+    if (tech === 'Graftcode') return adjustForLatency(graftHistoryMs)
+    return null
+  }
+
   const adjustForLatency = (time) => {
     if (!excludeNetworkLatency || time === null) return time
     return Math.max(0, time - getEstimatedNetworkLatency())
@@ -88,13 +96,13 @@ function App() {
     setRestHistoryMs(null)
     setRestHistoryKb(null)
     setGrpcHistoryMs(null)
-    setGrpcStreamMs(null)
+    setGraftHistoryMs(null)
     try {
       const restHost = import.meta.env.VITE_REST_URL ?? 'https://localhost:8090'
       const grpcBase = import.meta.env.VITE_GRPC_URL ?? 'https://localhost:5005'
 
       // REST: one GET returning a big JSON array. Parse into objects so it's
-      // apples-to-apples with gRPC (which decodes protobuf into objects).
+      // apples-to-apples with gRPC/Graftcode (which decode into objects).
       let t = performance.now()
       const resp = await fetch(`${restHost}/api/EnergyPrice/history?count=${payloadCount}`)
       const text = await resp.text()
@@ -108,10 +116,11 @@ function App() {
       await callGrpcGetPriceHistory(grpcBase, payloadCount)
       setGrpcHistoryMs(Math.round(performance.now() - t))
 
-      // gRPC server streaming: points arrive one at a time over one HTTP/2 stream.
+      // Graftcode: one static method call returning double[] over WebSocket — no HTTP overhead.
       t = performance.now()
-      await streamGrpcPrices(grpcBase, payloadCount)
-      setGrpcStreamMs(Math.round(performance.now() - t))
+      const graftPoints = await EnergyPriceService.GetPriceHistory(payloadCount)
+      void graftPoints.length
+      setGraftHistoryMs(Math.round(performance.now() - t))
     } catch (err) {
       setPayloadError(err?.message || 'Request failed — are the backends running?')
     } finally {
@@ -139,15 +148,18 @@ function App() {
   }
 
   const calculateCostSavings = () => {
-    if (restHistoryMs === null || grpcHistoryMs === null) return null
+    const currentMs = msForTech(integrationTech)
+    if (currentMs === null) return null
 
-    const adjRest = adjustForLatency(restHistoryMs)
-    const adjGrpc = adjustForLatency(grpcHistoryMs)
-
-    const isRestCurrent = integrationTech === 'REST'
-    const currentMs = isRestCurrent ? adjRest : adjGrpc
-    const targetMs = isRestCurrent ? adjGrpc : adjRest
-    const targetName = isRestCurrent ? 'gRPC' : 'REST'
+    // Find the fastest of the other two measured technologies
+    const others = ['REST', 'gRPC', 'Graftcode'].filter(t => t !== integrationTech)
+    const candidates = others
+      .map(t => ({ name: t, ms: msForTech(t) }))
+      .filter(c => c.ms !== null && c.ms < currentMs)
+    if (candidates.length === 0) return null
+    const best = candidates.reduce((a, b) => a.ms < b.ms ? a : b)
+    const targetMs = best.ms
+    const targetName = best.name
 
     if (targetMs >= currentMs) return null
 
@@ -165,7 +177,7 @@ function App() {
     const hourlyCost = cloudPricing[cloudProvider]?.[instanceType] || 0.768
     const annualCostSavings = totalTimeSavedHours * hourlyCost
 
-    return { timeSavedPerRequestMs: timeSavedMs, totalTimeSavedHours, annualCostSavings, instanceType, targetName }
+    return { timeSavedPerRequestMs: timeSavedMs, totalTimeSavedHours, annualCostSavings, instanceType, targetName, currentMs, targetMs }
   }
 
   const estimatedLatency = getEstimatedNetworkLatency()
@@ -218,7 +230,7 @@ function App() {
         <div className="payload-header">
           <div>
             <h2>Large Payload &amp; Streaming</h2>
-            <p>One request returning many price points. REST uses JSON, gRPC uses protobuf — same .NET backend, same data.</p>
+            <p>One request returning many price points. All three call the same .NET logic — REST via HTTP/2+JSON, gRPC via HTTP/2+protobuf, Graftcode via direct method call (no API layer).</p>
           </div>
           <div className="latency-controls">
             <div className="latency-row">
@@ -262,19 +274,21 @@ function App() {
         <div className="summary">
           <div>{formatPayloadResult('REST (JSON)', restHistoryMs, restHistoryKb)}</div>
           <div>{formatPayloadResult('gRPC unary (protobuf)', grpcHistoryMs, null)}</div>
-          <div>{formatPayloadResult('gRPC server-streaming', grpcStreamMs, null)}</div>
+          <div>{formatPayloadResult('Graftcode (direct call)', graftHistoryMs, null)}</div>
         </div>
 
-        {(restHistoryMs !== null && grpcHistoryMs !== null) && (() => {
-          const adjRest = adjustForLatency(restHistoryMs)
-          const adjGrpc = adjustForLatency(grpcHistoryMs)
+        {(restHistoryMs !== null && grpcHistoryMs !== null && graftHistoryMs !== null) && (() => {
+          const results = [
+            { name: 'REST', ms: adjustForLatency(restHistoryMs) },
+            { name: 'gRPC', ms: adjustForLatency(grpcHistoryMs) },
+            { name: 'Graftcode', ms: adjustForLatency(graftHistoryMs) },
+          ]
+          const fastest = results.reduce((a, b) => a.ms < b.ms ? a : b)
+          const slowest = results.reduce((a, b) => a.ms > b.ms ? a : b)
+          const pct = (((slowest.ms - fastest.ms) / slowest.ms) * 100).toFixed(1)
           return (
             <div className="callout">
-              <strong>
-                {adjGrpc < adjRest
-                  ? `gRPC unary is ${(((adjRest - adjGrpc) / adjRest) * 100).toFixed(1)}% faster than REST`
-                  : `REST is ${(((adjGrpc - adjRest) / adjGrpc) * 100).toFixed(1)}% faster than gRPC unary`}
-              </strong>
+              <strong>{fastest.name} is {pct}% faster than {slowest.name}</strong>
             </div>
           )
         })()}

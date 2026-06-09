@@ -5,18 +5,19 @@ WORKDIR /app
 
 # Optional: pass NPM_AUTH_TOKEN and registry URLs for private @graft / @graftcode packages
 ARG NPM_AUTH_TOKEN
-ARG GRAFT_REGISTRY
+ARG GRAFT_REGISTRY=https://grft.dev/019d9fab-b7c0-73af-8344-d6b7a2aef977__graftcode
 ARG GRAFTCODE_REGISTRY
 
 COPY package*.json ./
-RUN if [ -n "$NPM_AUTH_TOKEN" ] && [ -n "$GRAFTCODE_REGISTRY" ]; then \
-      printf 'registry=https://registry.npmjs.org/\n@graft:registry=%s\n@graftcode:registry=%s\n//%s:_authToken=%s\n' \
-        "${GRAFT_REGISTRY:-https://registry.npmjs.org/}" \
-        "${GRAFT_REGISTRY}" \
-        "${GRAFTCODE_REGISTRY}" \
-        "${GRAFTCODE_REGISTRY#https://}" \
-        "${NPM_AUTH_TOKEN}" > .npmrc; \
-    fi \
+# Always write the @graft registry (public — no auth token required).
+# Add @graftcode auth only when NPM_AUTH_TOKEN + GRAFTCODE_REGISTRY are both supplied.
+RUN printf '@graft:registry=%s\n' "${GRAFT_REGISTRY}" > .npmrc \
+  && if [ -n "$NPM_AUTH_TOKEN" ] && [ -n "$GRAFTCODE_REGISTRY" ]; then \
+       printf '@graftcode:registry=%s\n//%s:_authToken=%s\n' \
+         "${GRAFTCODE_REGISTRY}" \
+         "${GRAFTCODE_REGISTRY#https://}" \
+         "${NPM_AUTH_TOKEN}" >> .npmrc; \
+     fi \
   && npm install \
   && rm -f .npmrc
 
